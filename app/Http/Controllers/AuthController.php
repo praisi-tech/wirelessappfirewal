@@ -8,7 +8,6 @@ use App\Services\TokenService;
 use App\WAF\Detectors\BruteForceDetector;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
@@ -28,6 +27,26 @@ class AuthController extends Controller
         $this->bruteForceDetector = $bruteForceDetector;
     }
 
+    public function showLoginForm()
+    {
+        // Jika user sudah terautentikasi, alihkan ke dashboard
+        if (Auth::check()) {
+            return redirect()->route('dashboard');
+        }
+        
+        return view('crypto.login');
+    }
+
+    public function showRegistrationForm()
+    {
+        // Jika user sudah terautentikasi, alihkan ke dashboard
+        if (Auth::check()) {
+            return redirect()->route('dashboard');
+        }
+        
+        return view('crypto.register');
+    }
+    
     public function register(Request $request)
     {
         $request->validate([
@@ -47,15 +66,11 @@ class AuthController extends Controller
 
         Log::info('User registered', ['user_id' => $user->id, 'email' => $user->email]);
 
-        return response()->json([
-            'message' => 'User registered successfully',
-            'user' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'api_key' => $user->api_key,
-            ],
-        ], 201);
+        // Login otomatis setelah registrasi
+        Auth::login($user);
+
+        // Redirect ke dashboard dengan pesan sukses
+        return redirect()->route('dashboard')->with('success', 'Akun berhasil dibuat!');
     }
 
     public function login(Request $request)
@@ -65,10 +80,10 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
-        // Check brute force protection
+        // Proteksi Brute Force
         if ($this->bruteForceDetector->isBlocked($request->ip())) {
             throw ValidationException::withMessages([
-                'email' => ['Too many failed attempts. IP address is blocked.'],
+                'email' => ['Terlalu banyak percobaan. IP Anda diblokir sementara.'],
             ]);
         }
 
@@ -77,53 +92,47 @@ class AuthController extends Controller
         if (!$user) {
             $this->bruteForceDetector->recordFailedAttempt($request, $request->email);
             throw ValidationException::withMessages([
-                'email' => ['The provided credentials are incorrect.'],
+                'email' => ['Kredensial yang diberikan tidak cocok.'],
             ]);
         }
 
-        // Check if user is locked
+        // Cek apakah akun dikunci
         if ($user->isLocked()) {
             throw ValidationException::withMessages([
-                'email' => ['Account is temporarily locked. Please try again later.'],
+                'email' => ['Akun terkunci sementara. Silakan coba lagi nanti.'],
             ]);
         }
 
-        // Verify password
+        // Verifikasi password
         if (!$this->crypto->verifyPassword($request->password, $user->password)) {
             $user->incrementLoginAttempts();
             $this->bruteForceDetector->recordFailedAttempt($request, $request->email);
             
             throw ValidationException::withMessages([
-                'email' => ['The provided credentials are incorrect.'],
+                'email' => ['Kredensial yang diberikan tidak cocok.'],
             ]);
         }
 
-        // Reset login attempts on successful login
+        // Reset login attempts jika sukses
         $user->resetLoginAttempts();
         $user->last_login_at = now();
         $user->save();
 
         $this->bruteForceDetector->recordSuccessfulAttempt($request, $request->email);
 
-        // Generate token
-        $token = $this->tokenService->createToken($user, [
+        // Generate token untuk keperluan API/WAF
+        $this->tokenService->createToken($user, [
             'device_info' => $request->header('User-Agent'),
             'ip_address' => $request->ip(),
         ]);
 
         Log::info('User logged in', ['user_id' => $user->id, 'email' => $user->email]);
 
-        return response()->json([
-            'access_token' => $token->token,
-            'token_type' => 'Bearer',
-            'expires_at' => $token->expires_at,
-            'user' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'is_admin' => $user->is_admin,
-            ],
-        ]);
+        // Inisialisasi Session Laravel
+        Auth::login($user, $request->has('remember'));
+
+        // Redirect ke dashboard (menggunakan intended agar kembali ke halaman yang dituju sebelumnya)
+        return redirect()->intended(route('dashboard'));
     }
 
     public function logout(Request $request)
@@ -136,7 +145,12 @@ class AuthController extends Controller
 
         Log::info('User logged out', ['user_id' => Auth::id()]);
 
-        return response()->json(['message' => 'Successfully logged out']);
+        // Logout dari session Laravel
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
+        return redirect()->route('login');
     }
 
     public function generateApiKey(Request $request)
@@ -160,7 +174,7 @@ class AuthController extends Controller
                 'nonce' => $apiData['nonce'],
                 'signature' => $apiData['signature'],
             ],
-            'warning' => 'Store your secret key securely. It will not be shown again.',
+            'warning' => 'Simpan secret key Anda dengan aman. Tidak akan ditampilkan lagi.',
         ]);
     }
 
@@ -176,7 +190,7 @@ class AuthController extends Controller
         $user->secret_key = null;
         $user->save();
 
-        // Revoke all tokens
+        // Cabut semua token
         $this->tokenService->revokeAllUserTokens($user);
 
         Log::info('API key revoked', ['user_id' => $user->id]);

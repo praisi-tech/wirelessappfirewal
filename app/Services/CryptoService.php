@@ -15,7 +15,7 @@ class CryptoService
     {
         $this->key = base64_decode(config('crypto.key'));
         $this->cipher = config('crypto.algorithm', 'aes-256-gcm');
-        $this->hmacKey = config('crypto.hmac_key', env('APP_KEY'));
+        $this->hmacKey = config('CRYPTO_HMAC_KEY', env('APP_KEY'));
     }
 
     public function encrypt(string $data): array

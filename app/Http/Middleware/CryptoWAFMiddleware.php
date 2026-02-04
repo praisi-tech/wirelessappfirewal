@@ -33,8 +33,22 @@ class CryptoWAFMiddleware
 
     public function handle(Request $request, Closure $next): Response
     {
+        // Log request for debugging
+        Log::debug('WAF Processing:', [
+            'method' => $request->method(),
+            'path' => $request->path(),
+            'url' => $request->fullUrl(),
+            'isAjax' => $request->ajax(),
+            'wantsJson' => $request->wantsJson(),
+        ]);
+        
         // Check if WAF is enabled
         if (!config('waf.enabled', true)) {
+            return $next($request);
+        }
+        
+        // Skip WAF for GET requests to crypto dashboard (to avoid false positives)
+        if ($request->isMethod('GET') && $request->path() === 'crypto') {
             return $next($request);
         }
         
@@ -73,7 +87,7 @@ class CryptoWAFMiddleware
         
         // Process threats
         if (!empty($threats)) {
-            return $this->handleThreats($request, $threats);
+            return $this->handleThreats($request, $threats, $next);
         }
         
         // Log normal request
@@ -108,7 +122,7 @@ class CryptoWAFMiddleware
         return false;
     }
 
-    private function handleThreats(Request $request, array $threats): Response
+    private function handleThreats(Request $request, array $threats, Closure $next): Response
     {
         $blockRequest = false;
         $highestSeverity = 0;
@@ -147,31 +161,45 @@ class CryptoWAFMiddleware
                 'threats' => $threats,
             ]);
             
-            return response()->json([
-                'error' => 'Request blocked',
-                'message' => 'Security threat detected',
-                'threats' => array_map(function ($threat) {
-                    return [
-                        'type' => $threat['type'],
-                        'severity' => $threat['severity'],
-                    ];
-                }, $threats),
-            ], 403);
+            // Return appropriate response based on request type
+            if ($request->wantsJson() || $request->ajax()) {
+                return response()->json([
+                    'error' => 'Request blocked',
+                    'message' => 'Security threat detected',
+                    'threats' => array_map(function ($threat) {
+                        return [
+                            'type' => $threat['type'],
+                            'severity' => $threat['severity'],
+                        ];
+                    }, $threats),
+                ], 403);
+            } else {
+                // For web requests, redirect back with error
+                return redirect()->back()
+                    ->withInput()
+                    ->withErrors(['security' => 'Security threat detected. Request blocked.']);
+            }
         }
         
         // For non-blocking threats, continue but sanitize input
         $this->sanitizeRequest($request, $threats);
         
-        return response()->json([
-            'warning' => 'Security warnings detected',
-            'message' => 'Input has been sanitized',
-            'warnings' => array_map(function ($threat) {
-                return [
-                    'type' => $threat['type'],
-                    'severity' => $threat['severity'],
-                ];
-            }, $threats),
-        ], 200);
+        // If it's an API request, return JSON warning
+        if ($request->wantsJson() || $request->ajax()) {
+            return response()->json([
+                'warning' => 'Security warnings detected',
+                'message' => 'Input has been sanitized',
+                'warnings' => array_map(function ($threat) {
+                    return [
+                        'type' => $threat['type'],
+                        'severity' => $threat['severity'],
+                    ];
+                }, $threats),
+            ], 200);
+        }
+        
+        // For web requests, continue with sanitized input
+        return $next($request);
     }
 
     private function sanitizeRequest(Request $request, array $threats): void

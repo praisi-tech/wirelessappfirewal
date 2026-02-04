@@ -30,7 +30,8 @@ class TokenService
             'user_id' => $user->id,
             'device_info' => $metadata['device_info'] ?? null,
             'ip_address' => $metadata['ip_address'] ?? request()->ip(),
-            'expires_at' => now()->addSeconds(config('crypto.token_expiry', 3600)),
+            // FIXED: Added (int) cast to ensure PHP 8.2 compatibility
+            'expires_at' => now()->addSeconds((int) config('crypto.token_expiry', 3600)),
             'is_active' => true,
         ]);
         
