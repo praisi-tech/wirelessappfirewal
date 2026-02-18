@@ -13,8 +13,8 @@ return new class extends Migration
             $table->string('name');
             $table->string('email')->unique();
             $table->string('password');
-            $table->string('api_key')->nullable();
-            $table->string('secret_key')->nullable();
+            $table->text('api_key')->nullable();  
+            $table->text('secret_key')->nullable(); 
             $table->boolean('is_admin')->default(false);
             $table->timestamp('last_login_at')->nullable();
             $table->integer('login_attempts')->default(0);

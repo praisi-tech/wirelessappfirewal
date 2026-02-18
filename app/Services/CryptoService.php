@@ -7,32 +7,60 @@ use Illuminate\Support\Str;
 
 class CryptoService
 {
-    private string $key;
+    private string $defaultKey;
     private string $cipher;
     private string $hmacKey;
 
     public function __construct()
     {
-        $this->key = base64_decode(config('crypto.key'));
-        $this->cipher = config('crypto.algorithm', 'aes-256-gcm');
-        $this->hmacKey = config('CRYPTO_HMAC_KEY', env('APP_KEY'));
+        // 1. Resolve Encryption Key
+        // Fallback hierarchy: Config -> Env APP_KEY -> Random string to prevent null
+        $configKey = config('crypto.key') ?? config('app.key') ?? Str::random(32);
+        
+        // Clean the key (remove 'base64:' prefix if it exists)
+        if (str_starts_with($configKey, 'base64:')) {
+            $configKey = substr($configKey, 7);
+        }
+
+        // Cast to string to ensure the 'private string' property is satisfied
+        $this->defaultKey = (string) base64_decode($configKey);
+        
+        // 2. Resolve Cipher
+        $this->cipher = (string) config('crypto.algorithm', 'aes-256-gcm');
+        
+        // 3. Resolve HMAC Key
+        // This was the source of the crash. Casting to (string) prevents the TypeError.
+        $this->hmacKey = (string) (config('crypto.hmac_key') ?? env('APP_KEY') ?? 'fallback-hmac-secret-32-characters');
     }
 
-    public function encrypt(string $data): array
+    /**
+     * Get the default encryption key
+     */
+    public function getKey(): string
+    {
+        return $this->defaultKey;
+    }
+
+    /**
+     * Encrypt data using the specified cipher.
+     */
+    public function encrypt(string $data, ?string $customKey = null): array
     {
         try {
-            $iv = random_bytes(openssl_cipher_iv_length($this->cipher));
+            $key = $customKey ?: $this->defaultKey;
+            $ivLength = openssl_cipher_iv_length($this->cipher);
+            $iv = random_bytes($ivLength);
             
-            if (str_contains($this->cipher, 'gcm')) {
+            if (str_contains(strtolower($this->cipher), 'gcm')) {
                 $tag = '';
                 $encrypted = openssl_encrypt(
                     $data,
                     $this->cipher,
-                    $this->key,
+                    $key,
                     OPENSSL_RAW_DATA,
                     $iv,
                     $tag,
-                    '',
+                    '', 
                     16
                 );
                 
@@ -45,7 +73,7 @@ class CryptoService
                 $encrypted = openssl_encrypt(
                     $data,
                     $this->cipher,
-                    $this->key,
+                    $key,
                     OPENSSL_RAW_DATA,
                     $iv
                 );
@@ -61,18 +89,26 @@ class CryptoService
         }
     }
 
-    public function decrypt(array $encryptedData): string
+    /**
+     * Decrypt data.
+     */
+    public function decrypt(array $encryptedData, ?string $customKey = null): string
     {
         try {
+            $key = $customKey ?: $this->defaultKey;
             $ciphertext = base64_decode($encryptedData['ciphertext']);
             $iv = base64_decode($encryptedData['iv']);
             
-            if (str_contains($this->cipher, 'gcm')) {
+            if (str_contains(strtolower($this->cipher), 'gcm')) {
+                if (empty($encryptedData['tag'])) {
+                    throw new \InvalidArgumentException('Authentication tag is required for GCM ciphers.');
+                }
                 $tag = base64_decode($encryptedData['tag']);
+                
                 $decrypted = openssl_decrypt(
                     $ciphertext,
                     $this->cipher,
-                    $this->key,
+                    $key,
                     OPENSSL_RAW_DATA,
                     $iv,
                     $tag
@@ -81,14 +117,14 @@ class CryptoService
                 $decrypted = openssl_decrypt(
                     $ciphertext,
                     $this->cipher,
-                    $this->key,
+                    $key,
                     OPENSSL_RAW_DATA,
                     $iv
                 );
             }
             
             if ($decrypted === false) {
-                throw new \RuntimeException('Decryption failed');
+                throw new \RuntimeException('Decryption failed: Check key, IV, or tag integrity.');
             }
             
             return $decrypted;
@@ -98,13 +134,13 @@ class CryptoService
         }
     }
 
-    public function generateHmac(string $data, string $key = null): string
+    public function generateHmac(string $data, ?string $key = null): string
     {
         $key = $key ?: $this->hmacKey;
         return hash_hmac('sha256', $data, $key);
     }
 
-    public function verifyHmac(string $data, string $hmac, string $key = null): bool
+    public function verifyHmac(string $data, string $hmac, ?string $key = null): bool
     {
         $expected = $this->generateHmac($data, $key);
         return hash_equals($expected, $hmac);

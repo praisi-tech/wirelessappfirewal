@@ -5,18 +5,13 @@
 .DS_Store
 .env
 .phpunit.result.cache
-storage/logs/laravel.log
+storage/logs/*.log
 public/storage
 storage/framework/cache/data/*
 storage/framework/sessions/*
 storage/framework/views/*
 coverage/
-Homestead.json
-Homestead.yaml
-npm-debug.log
-yarn-error.log
-/.fleet
-/.nova
-/composer.lock
-/package-lock.json
-yarn.lock
+
+# File di bawah ini SEBAIKNYA TIDAK di-ignore (hapus tanda /)
+# composer.lock
+# package-lock.json

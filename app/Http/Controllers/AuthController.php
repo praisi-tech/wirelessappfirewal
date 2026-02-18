@@ -29,7 +29,6 @@ class AuthController extends Controller
 
     public function showLoginForm()
     {
-        // Jika user sudah terautentikasi, alihkan ke dashboard
         if (Auth::check()) {
             return redirect()->route('dashboard');
         }
@@ -39,7 +38,6 @@ class AuthController extends Controller
 
     public function showRegistrationForm()
     {
-        // Jika user sudah terautentikasi, alihkan ke dashboard
         if (Auth::check()) {
             return redirect()->route('dashboard');
         }
@@ -55,21 +53,27 @@ class AuthController extends Controller
             'password' => 'required|string|min:8|confirmed',
         ]);
 
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => $this->crypto->hashPassword($request->password),
-        ]);
+        // MODIFIKASI: Buat instance baru tanpa save dulu untuk menghindari 
+        // error "Field 'secret_key' doesn't have a default value"
+        $user = new User();
+        $user->name = $request->name;
+        $user->email = $request->email;
+        
+        /** * PENTING: Karena di Model User sudah ada cast 'password' => 'hashed',
+         * cukup masukkan password teks polos. Laravel akan otomatis meng-hash-nya.
+         */
+        $user->password = $request->password;
 
-        // Generate API keys
-        $user->generateApiKey();
+        // Generate API keys secara internal ke properti model sebelum save
+        $user->generateKeysForNewUser();
 
-        Log::info('User registered', ['user_id' => $user->id, 'email' => $user->email]);
+        // Simpan ke database (Sekarang api_key dan secret_key sudah ada isinya)
+        $user->save();
 
-        // Login otomatis setelah registrasi
+        Log::info('User registered with CryptoWAF keys', ['user_id' => $user->id, 'email' => $user->email]);
+
         Auth::login($user);
 
-        // Redirect ke dashboard dengan pesan sukses
         return redirect()->route('dashboard')->with('success', 'Akun berhasil dibuat!');
     }
 
@@ -80,7 +84,6 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
-        // Proteksi Brute Force
         if ($this->bruteForceDetector->isBlocked($request->ip())) {
             throw ValidationException::withMessages([
                 'email' => ['Terlalu banyak percobaan. IP Anda diblokir sementara.'],
@@ -96,14 +99,13 @@ class AuthController extends Controller
             ]);
         }
 
-        // Cek apakah akun dikunci
         if ($user->isLocked()) {
             throw ValidationException::withMessages([
                 'email' => ['Akun terkunci sementara. Silakan coba lagi nanti.'],
             ]);
         }
 
-        // Verifikasi password
+        // Gunakan CryptoService untuk verifikasi jika password di-hash dengan metode custom
         if (!$this->crypto->verifyPassword($request->password, $user->password)) {
             $user->incrementLoginAttempts();
             $this->bruteForceDetector->recordFailedAttempt($request, $request->email);
@@ -113,14 +115,12 @@ class AuthController extends Controller
             ]);
         }
 
-        // Reset login attempts jika sukses
         $user->resetLoginAttempts();
         $user->last_login_at = now();
         $user->save();
 
         $this->bruteForceDetector->recordSuccessfulAttempt($request, $request->email);
 
-        // Generate token untuk keperluan API/WAF
         $this->tokenService->createToken($user, [
             'device_info' => $request->header('User-Agent'),
             'ip_address' => $request->ip(),
@@ -128,10 +128,8 @@ class AuthController extends Controller
 
         Log::info('User logged in', ['user_id' => $user->id, 'email' => $user->email]);
 
-        // Inisialisasi Session Laravel
         Auth::login($user, $request->has('remember'));
 
-        // Redirect ke dashboard (menggunakan intended agar kembali ke halaman yang dituju sebelumnya)
         return redirect()->intended(route('dashboard'));
     }
 
@@ -145,7 +143,6 @@ class AuthController extends Controller
 
         Log::info('User logged out', ['user_id' => Auth::id()]);
 
-        // Logout dari session Laravel
         Auth::logout();
         $request->session()->invalidate();
         $request->session()->regenerateToken();
@@ -163,7 +160,7 @@ class AuthController extends Controller
 
         $apiData = $this->tokenService->generateApiToken($user);
 
-        Log::info('API key generated', ['user_id' => $user->id]);
+        Log::info('API key regenerated', ['user_id' => $user->id]);
 
         return response()->json([
             'message' => 'API key generated successfully',
@@ -190,7 +187,6 @@ class AuthController extends Controller
         $user->secret_key = null;
         $user->save();
 
-        // Cabut semua token
         $this->tokenService->revokeAllUserTokens($user);
 
         Log::info('API key revoked', ['user_id' => $user->id]);
@@ -198,13 +194,57 @@ class AuthController extends Controller
         return response()->json(['message' => 'API key revoked successfully']);
     }
 
-    public function getProfile(Request $request)
+    public function showProfile(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) return redirect()->route('login');
+
+        return view('crypto.profile', compact('user'));
+    }
+
+    public function updateProfile(Request $request)
     {
         $user = $request->user();
         
-        if (!$user) {
-            return response()->json(['error' => 'Unauthorized'], 401);
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users,email,' . $user->id,
+            'current_password' => 'nullable|string',
+            'new_password' => 'nullable|string|min:8|confirmed',
+        ]);
+
+        $user->name = $request->name;
+        $user->email = $request->email;
+
+        if ($request->filled('new_password')) {
+            if (!$this->crypto->verifyPassword($request->current_password, $user->password)) {
+                throw ValidationException::withMessages([
+                    'current_password' => ['Password saat ini tidak sesuai.'],
+                ]);
+            }
+            // MODIFIKASI: Langsung set password, Model cast yang akan meng-hash
+            $user->password = $request->new_password;
         }
+
+        $user->save();
+
+        Log::info('User profile updated', ['user_id' => $user->id]);
+
+        return redirect()->route('profile')->with('success', 'Profil berhasil diperbarui!');
+    }
+
+    public function showApiKeys(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) return redirect()->route('login');
+
+        return view('crypto.api-keys', compact('user'));
+    }
+
+    public function getProfile(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) return response()->json(['error' => 'Unauthorized'], 401);
 
         return response()->json([
             'user' => [

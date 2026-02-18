@@ -2,14 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\WAFLog;
+use App\Models\WafLog; 
 use App\Models\BlockedIP;
 use App\Models\User;
 use App\WAF\Logger\WAFLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-// Tambahkan import untuk Laravel 11/12 middleware
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
 
@@ -23,7 +22,7 @@ class DashboardController extends Controller implements HasMiddleware
     }
 
     /**
-     * Registrasi Middleware untuk Controller (Standar Laravel 11/12)
+     * Registrasi Middleware untuk Controller
      */
     public static function middleware(): array
     {
@@ -35,26 +34,21 @@ class DashboardController extends Controller implements HasMiddleware
     /**
      * Menampilkan Halaman Dashboard Utama
      */
-    public function dashboard(Request $request)
+    public function index(Request $request)
     {
         $user = Auth::user();
-        
-        // Ambil data statistik
         $stats = $this->getDashboardStats();
         
-        // Ambil 10 ancaman terbaru
-        $recentThreats = WAFLog::whereNotNull('threat_type')
+        $recentThreats = WafLog::whereNotNull('threat_type')
             ->orderBy('created_at', 'desc')
             ->limit(10)
             ->get();
         
-        // Ambil 10 IP yang paling sering diblokir
         $topBlockedIPs = BlockedIP::orderBy('attempts', 'desc')
             ->limit(10)
             ->get();
         
-        // JIKA request mengharapkan JSON (AJAX Refresh)
-        if ($request->expectsJson() || $request->wantsJson()) {
+        if ($request->expectsJson()) {
             return response()->json([
                 'user' => $user,
                 'stats' => $stats,
@@ -63,52 +57,125 @@ class DashboardController extends Controller implements HasMiddleware
             ]);
         }
 
-        // TAMPILKAN HALAMAN VISUAL (Blade View)
         return view('crypto.dashboard', compact('user', 'stats', 'recentThreats', 'topBlockedIPs'));
     }
 
     /**
-     * Ambil Logs untuk Data Table
+     * Menampilkan Halaman Audit Logs (Milestone: Observability)
      */
-    public function getLogs(Request $request)
+    public function logs(Request $request)
     {
-        // Pastikan User punya akses (Policy)
-        // $this->authorize('viewAny', WAFLog::class); // Opsional jika Policy sudah siap
+        $query = WafLog::with('user');
         
-        $query = WAFLog::with('user');
-        
-        if ($request->has('type')) {
+        // Filter Pencarian
+        if ($request->filled('type')) {
             $query->where('threat_type', $request->type);
         }
         
-        if ($request->has('severity')) {
+        if ($request->filled('ip')) {
+            $query->where('ip_address', 'like', "%{$request->ip}%");
+        }
+
+        if ($request->filled('severity')) {
             $query->where('severity', '>=', $request->severity);
         }
+
+        $logs = $query->orderBy('created_at', 'desc')->paginate(15)->withQueryString();
         
-        if ($request->has('blocked')) {
-            $query->where('blocked', $request->boolean('blocked'));
-        }
-        
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('ip_address', 'like', "%{$search}%")
-                  ->orWhere('description', 'like', "%{$search}%")
-                  ->orWhere('url', 'like', "%{$search}%");
-            });
-        }
-        
-        $logs = $query->orderBy('created_at', 'desc')
-            ->paginate($request->get('per_page', 50));
-        
-        return response()->json([
-            'logs' => $logs,
-            'filters' => $request->all(),
+        /**
+         * UPDATED: Dropdown Logic
+         * We merge default security types with unique types found in the DB.
+         * This ensures the dropdown isn't empty on a new install.
+         */
+        $defaultTypes = collect([
+            'invalid_signature', 
+            'replay_attack', 
+            'sql_injection', 
+            'manual_block', 
+            'xss_attack'
         ]);
+
+        $dbTypes = WafLog::select('threat_type')
+                        ->distinct()
+                        ->whereNotNull('threat_type')
+                        ->pluck('threat_type');
+
+        // Merge, unique, and sort for a clean dropdown list
+        $threatTypes = $defaultTypes->merge($dbTypes)->unique()->sort();
+
+        return view('crypto.logs', compact('logs', 'threatTypes'));
     }
 
     /**
-     * List IP yang sedang diblokir
+     * Export ke CSV (Native PHP - Milestone: Observability)
+     */
+    public function export()
+    {
+        $fileName = 'WAF_Security_Report_' . date('Y-m-d_His') . '.csv';
+        
+        $headers = [
+            "Content-type"        => "text/csv",
+            "Content-Disposition" => "attachment; filename=$fileName",
+            "Pragma"              => "no-cache",
+            "Cache-Control"       => "must-revalidate, post-check=0, pre-check=0",
+            "Expires"             => "0"
+        ];
+
+        $columns = ['ID', 'Timestamp', 'IP Address', 'User', 'Threat Type', 'Severity', 'Method', 'URL', 'Status', 'Description'];
+
+        $callback = function() use ($columns) {
+            $file = fopen('php://output', 'w');
+            fputcsv($file, $columns);
+
+            WafLog::with('user')->latest()->chunk(500, function($logs) use ($file) {
+                foreach ($logs as $log) {
+                    fputcsv($file, [
+                        $log->id,
+                        $log->created_at->format('Y-m-d H:i:s'),
+                        $log->ip_address,
+                        $log->user ? $log->user->email : 'Guest',
+                        strtoupper(str_replace('_', ' ', $log->threat_type ?? 'NORMAL')),
+                        'Level ' . ($log->severity ?? 1),
+                        $log->method,
+                        $log->url,
+                        $log->blocked ? 'Blocked' : 'Allowed',
+                        $log->description,
+                    ]);
+                }
+            });
+
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    }
+
+    /**
+     * List IP yang sedang diblokir (untuk view/blade)
+     */
+    public function showBlockedIPsView(Request $request)
+    {
+        $query = BlockedIP::with('blockedBy');
+        
+        if ($request->has('active')) {
+            $query->where(function ($q) {
+                $q->whereNull('blocked_until')
+                  ->orWhere('blocked_until', '>', now());
+            });
+        }
+        
+        $blockedIPs = $query->orderBy('created_at', 'desc')->paginate(20);
+        
+        $totalActive = BlockedIP::where(function ($q) {
+            $q->whereNull('blocked_until')
+              ->orWhere('blocked_until', '>', now());
+        })->count();
+        
+        return view('crypto.blocked-ips', compact('blockedIPs', 'totalActive'));
+    }
+
+    /**
+     * List IP yang sedang diblokir (JSON API)
      */
     public function getBlockedIPs(Request $request)
     {
@@ -134,7 +201,7 @@ class DashboardController extends Controller implements HasMiddleware
     }
 
     /**
-     * Blokir IP secara Manual
+     * Blokir IP secara Manual (Milestone: Automatic Protection)
      */
     public function blockIP(Request $request)
     {
@@ -151,11 +218,12 @@ class DashboardController extends Controller implements HasMiddleware
                 'blocked_until' => $request->has('permanent') ? null : 
                     now()->addSeconds($request->get('block_duration', 3600)),
                 'blocked_by' => Auth::id(),
+                'attempts' => DB::raw('attempts + 1')
             ]
         );
         
-        // Catat ke log bahwa ada blokir manual
-        $this->wafLogger->logThreat($request, 'manual_block', "IP manually blocked by admin", 3, true);
+        // Milestone: Observability (Logging admin action)
+        $this->wafLogger->logThreat($request, 'manual_block', "IP manually blocked by admin: " . Auth::user()->name, 3, true);
         
         return response()->json(['message' => 'IP blocked successfully', 'blocked_ip' => $blockedIP]);
     }
@@ -166,10 +234,7 @@ class DashboardController extends Controller implements HasMiddleware
     public function unblockIP(Request $request, $id)
     {
         $blockedIP = BlockedIP::findOrFail($id);
-        
-        // Kita set expired saja daripada hapus total (untuk history)
-        $blockedIP->blocked_until = now()->subDay(); 
-        $blockedIP->save();
+        $blockedIP->delete(); 
         
         return response()->json(['message' => 'IP unblocked successfully']);
     }
@@ -184,10 +249,9 @@ class DashboardController extends Controller implements HasMiddleware
             'end_date' => 'nullable|date|after_or_equal:start_date',
         ]);
         
-        // Menggunakan library WAFLogger Anda untuk ambil data grafik
         $stats = $this->wafLogger->getStats($filters);
         
-        $stats['top_attacked_endpoints'] = WAFLog::whereNotNull('threat_type')
+        $stats['top_attacked_endpoints'] = WafLog::whereNotNull('threat_type')
             ->select('url', DB::raw('COUNT(*) as attacks'))
             ->groupBy('url')
             ->orderBy('attacks', 'desc')
@@ -198,13 +262,13 @@ class DashboardController extends Controller implements HasMiddleware
     }
 
     /**
-     * Bersihkan Log Lama
+     * Bersihkan Log Lama (Maintenance)
      */
     public function cleanupLogs(Request $request)
     {
         $days = $request->get('days', 30);
         $cutoff = now()->subDays($days);
-        $deleted = WAFLog::where('created_at', '<', $cutoff)->delete();
+        $deleted = WafLog::where('created_at', '<', $cutoff)->delete();
         
         return response()->json([
             'message' => 'Logs cleaned up successfully',
@@ -220,11 +284,11 @@ class DashboardController extends Controller implements HasMiddleware
         $today = now()->startOfDay();
         
         return [
-            'total_requests_today' => WAFLog::where('created_at', '>=', $today)->count(),
-            'threats_today' => WAFLog::where('created_at', '>=', $today)
+            'total_requests_today' => WafLog::where('created_at', '>=', $today)->count(),
+            'threats_today' => WafLog::where('created_at', '>=', $today)
                 ->whereNotNull('threat_type')
                 ->count(),
-            'blocked_today' => WAFLog::where('created_at', '>=', $today)
+            'blocked_today' => WafLog::where('created_at', '>=', $today)
                 ->where('blocked', true)
                 ->count(),
             'active_blocks' => BlockedIP::where(function ($q) {

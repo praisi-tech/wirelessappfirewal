@@ -7,9 +7,12 @@ use App\WAF\Detectors\XSSDetector;
 use App\WAF\Detectors\BruteForceDetector;
 use App\WAF\Logger\WAFLogger;
 use App\Models\BlockedIP;
+use App\Models\User;
+use App\Services\SignatureService;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Symfony\Component\HttpFoundation\Response;
 
 class CryptoWAFMiddleware
@@ -18,107 +21,119 @@ class CryptoWAFMiddleware
     private XSSDetector $xssDetector;
     private BruteForceDetector $bruteForceDetector;
     private WAFLogger $logger;
+    private SignatureService $signatureService;
 
     public function __construct(
         SQLInjectionDetector $sqlDetector,
         XSSDetector $xssDetector,
         BruteForceDetector $bruteForceDetector,
-        WAFLogger $logger
+        WAFLogger $logger,
+        SignatureService $signatureService
     ) {
         $this->sqlDetector = $sqlDetector;
         $this->xssDetector = $xssDetector;
         $this->bruteForceDetector = $bruteForceDetector;
         $this->logger = $logger;
+        $this->signatureService = $signatureService;
     }
 
     public function handle(Request $request, Closure $next): Response
     {
-        // Log request for debugging
+        // 1. Log request for debugging
         Log::debug('WAF Processing:', [
             'method' => $request->method(),
             'path' => $request->path(),
-            'url' => $request->fullUrl(),
-            'isAjax' => $request->ajax(),
-            'wantsJson' => $request->wantsJson(),
+            'ip' => $request->ip(),
         ]);
         
-        // Check if WAF is enabled
+        // 2. Check if WAF is enabled
         if (!config('waf.enabled', true)) {
             return $next($request);
         }
         
-        // Skip WAF for GET requests to crypto dashboard (to avoid false positives)
-        if ($request->isMethod('GET') && $request->path() === 'crypto') {
+        // 3. Skip WAF for the dashboard/landing tools to avoid false positives
+        if ($request->isMethod('GET') && ($request->path() === 'crypto' || $request->path() === 'dashboard')) {
             return $next($request);
         }
         
-        // Check if IP is blocked
+        // 4. IP Blocking Check
         if ($this->isIPBlocked($request)) {
-            $this->logger->logThreat(
-                $request,
-                'blocked_ip',
-                'Blocked IP attempted access',
-                4,
-                true
-            );
-            
-            return response()->json([
-                'error' => 'Access denied',
-                'message' => 'Your IP address has been blocked',
-            ], 403);
+            $this->logger->logThreat($request, 'blocked_ip', 'Blocked IP attempted access', 5, true);
+            return response()->json(['error' => 'Access denied', 'message' => 'Your IP address has been blacklisted.'], 403);
+        }
+
+        // 5. AUTOMATIC PROTECTION: CRYPTOGRAPHIC SIGNATURE & REPLAY PROTECTION
+        if ($request->is('api/*')) {
+            $apiKey = $request->header('X-API-Key');
+            $signature = $request->header('X-Signature');
+            $nonce = $request->header('X-Nonce');
+
+            // Find User & Validate Credentials
+            $user = User::where('api_key', $apiKey)->first();
+
+            // A. Integrity Check (Milestone: Integrity Verified)
+            if (!$user || !$signature || !$this->signatureService->verify($request, $user->secret_key)) {
+                // Milestone: Observability
+                Log::warning('WAF: Signature Validation Failed', [
+                    'ip' => $request->ip(),
+                    'api_key' => $apiKey ?? 'MISSING',
+                    'url' => $request->fullUrl()
+                ]);
+                
+                $this->logger->logThreat($request, 'invalid_signature', 'Signature mismatch, missing, or unauthorized API Key', 5, true);
+                return response()->json(['status' => 'error', 'message' => 'Security integrity check failed (Invalid Signature)'], 401);
+            }
+
+            // B. Replay Protection (Milestone: Replay Protection)
+            if (!$nonce) {
+                return response()->json(['status' => 'error', 'message' => 'Security header X-Nonce is required'], 401);
+            }
+
+            if (Cache::has('waf_nonce_' . $nonce)) {
+                Log::alert('WAF: Replay Attack Detected!', ['nonce' => $nonce, 'ip' => $request->ip()]);
+                $this->logger->logThreat($request, 'replay_attack', 'Duplicate request signature (Replay Attack)', 5, true);
+                return response()->json(['status' => 'error', 'message' => 'Request has already been processed (Replay Protection)'], 429);
+            }
+
+            // Store nonce (Redis/Database recommended for production)
+            Cache::put('waf_nonce_' . $nonce, true, now()->addMinutes(10));
         }
         
-        // Run all detectors
+        // 6. Content Scanning (SQLi, XSS, Brute Force)
         $threats = [];
+        $threats = array_merge($threats, $this->sqlDetector->detect($request));
+        $threats = array_merge($threats, $this->xssDetector->detect($request));
         
-        // SQL Injection detection
-        $sqlThreats = $this->sqlDetector->detect($request);
-        $threats = array_merge($threats, $sqlThreats);
-        
-        // XSS detection
-        $xssThreats = $this->xssDetector->detect($request);
-        $threats = array_merge($threats, $xssThreats);
-        
-        // Brute force detection (only for auth routes)
         if ($this->isAuthRoute($request)) {
-            $bruteForceThreats = $this->bruteForceDetector->detect($request);
-            $threats = array_merge($threats, $bruteForceThreats);
+            $threats = array_merge($threats, $this->bruteForceDetector->detect($request));
         }
         
-        // Process threats
+        // 7. Process threats
         if (!empty($threats)) {
             return $this->handleThreats($request, $threats, $next);
         }
         
-        // Log normal request
-        $this->logger->logRequest($request);
+        // Log normal request (Optional: only for high-security audits)
+        // $this->logger->logRequest($request);
         
         return $next($request);
     }
 
     private function isIPBlocked(Request $request): bool
     {
-        $ipAddress = $request->ip();
-        
-        return BlockedIP::where('ip_address', $ipAddress)
+        return BlockedIP::where('ip_address', $request->ip())
             ->where(function ($query) {
-                $query->whereNull('blocked_until')
-                    ->orWhere('blocked_until', '>', now());
-            })
-            ->exists();
+                $query->whereNull('blocked_until')->orWhere('blocked_until', '>', now());
+            })->exists();
     }
 
     private function isAuthRoute(Request $request): bool
     {
         $path = $request->path();
         $authRoutes = ['login', 'register', 'password/reset', 'auth'];
-        
         foreach ($authRoutes as $route) {
-            if (str_contains($path, $route)) {
-                return true;
-            }
+            if (str_contains($path, $route)) return true;
         }
-        
         return false;
     }
 
@@ -128,7 +143,6 @@ class CryptoWAFMiddleware
         $highestSeverity = 0;
         
         foreach ($threats as $threat) {
-            // Log each threat
             $this->logger->logThreat(
                 $request,
                 $threat['type'],
@@ -138,85 +152,41 @@ class CryptoWAFMiddleware
                 $threat
             );
             
-            // Update highest severity
-            if ($threat['severity'] > $highestSeverity) {
-                $highestSeverity = $threat['severity'];
-            }
-            
-            // Block request if any threat requires blocking
-            if ($threat['blocked'] ?? false) {
-                $blockRequest = true;
-            }
+            if ($threat['severity'] > $highestSeverity) $highestSeverity = $threat['severity'];
+            if ($threat['blocked'] ?? false) $blockRequest = true;
         }
         
-        // Block request if severity is critical
-        if ($highestSeverity >= 4) {
-            $blockRequest = true;
-        }
-        
-        if ($blockRequest) {
-            Log::warning('Request blocked by WAF', [
+        // Hard Block for Critical Threats
+        if ($blockRequest || $highestSeverity >= 4) {
+            Log::alert('WAF: Request blocked due to high-severity threat', [
                 'ip' => $request->ip(),
-                'url' => $request->fullUrl(),
-                'threats' => $threats,
+                'highest_severity' => $highestSeverity,
+                'threats_count' => count($threats),
             ]);
             
-            // Return appropriate response based on request type
-            if ($request->wantsJson() || $request->ajax()) {
-                return response()->json([
-                    'error' => 'Request blocked',
-                    'message' => 'Security threat detected',
-                    'threats' => array_map(function ($threat) {
-                        return [
-                            'type' => $threat['type'],
-                            'severity' => $threat['severity'],
-                        ];
-                    }, $threats),
-                ], 403);
-            } else {
-                // For web requests, redirect back with error
-                return redirect()->back()
-                    ->withInput()
-                    ->withErrors(['security' => 'Security threat detected. Request blocked.']);
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json(['error' => 'Security policy violation', 'details' => 'Request blocked by WAF'], 403);
             }
+            return redirect()->route('dashboard')->with('error', 'Your request was blocked for security reasons.');
         }
         
-        // For non-blocking threats, continue but sanitize input
+        // Soft Protection: Sanitize and Continue
         $this->sanitizeRequest($request, $threats);
-        
-        // If it's an API request, return JSON warning
-        if ($request->wantsJson() || $request->ajax()) {
-            return response()->json([
-                'warning' => 'Security warnings detected',
-                'message' => 'Input has been sanitized',
-                'warnings' => array_map(function ($threat) {
-                    return [
-                        'type' => $threat['type'],
-                        'severity' => $threat['severity'],
-                    ];
-                }, $threats),
-            ], 200);
-        }
-        
-        // For web requests, continue with sanitized input
         return $next($request);
     }
 
     private function sanitizeRequest(Request $request, array $threats): void
     {
         foreach ($threats as $threat) {
-            if ($threat['type'] === 'sql_injection' && isset($threat['parameter'])) {
-                $value = $request->input($threat['parameter']);
-                if ($value) {
-                    $sanitized = $this->sqlDetector->sanitize($value);
-                    $request->merge([$threat['parameter'] => $sanitized]);
-                }
-            } elseif ($threat['type'] === 'xss' && isset($threat['parameter'])) {
-                $value = $request->input($threat['parameter']);
-                if ($value) {
-                    $sanitized = $this->xssDetector->sanitize($value);
-                    $request->merge([$threat['parameter'] => $sanitized]);
-                }
+            $param = $threat['parameter'] ?? null;
+            if (!$param) continue;
+
+            $value = $request->input($param);
+            if ($value && is_string($value)) {
+                $sanitized = ($threat['type'] === 'sql_injection') 
+                    ? $this->sqlDetector->sanitize($value) 
+                    : $this->xssDetector->sanitize($value);
+                $request->merge([$param => $sanitized]);
             }
         }
     }

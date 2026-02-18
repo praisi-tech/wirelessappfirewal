@@ -51,6 +51,9 @@ class VerifySignature
                 'user_id' => $user->id,
                 'ip' => $request->ip(),
                 'url' => $request->fullUrl(),
+                'method' => $request->method(),
+                'threat_type' => 'invalid_signature',
+                'severity' => 3,
             ]);
             
             return response()->json([

@@ -10,7 +10,8 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
             WAFRuleSeeder::class,
-            // Add other seeders here
+            CryptoTestUserSeeder::class,
+            WAFLogTestSeeder::class,
         ]);
     }
 }

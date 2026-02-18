@@ -19,6 +19,32 @@ class CryptoRequestController extends Controller
         $this->signatureService = $signatureService;
     }
 
+    /**
+     * Unified response handler: Detects if request expects JSON (API)
+     * or a redirect (Web Form).
+     */
+    private function respond($data, $message = 'Success')
+    {
+        if (request()->expectsJson()) {
+            return response()->json(array_merge(['message' => $message], $data));
+        }
+
+        // withInput() ensures the user doesn't lose their data on the form after submission
+        return back()->with('result', $data)->with('success', $message)->withInput();
+    }
+
+    /**
+     * Unified error handler for validation and exceptions.
+     */
+    private function error($message, $details = [], $code = 422)
+    {
+        if (request()->expectsJson()) {
+            return response()->json(['error' => $message, 'details' => $details], $code);
+        }
+
+        return back()->withErrors($details ?: $message)->with('error', $message)->withInput();
+    }
+
     public function encryptData(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -27,43 +53,26 @@ class CryptoRequestController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'error' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->error('Validation failed', $validator->errors());
         }
 
         try {
-            $key = $request->input('key') ? base64_decode($request->input('key')) : null;
+            // Handle custom key if provided via Base64, otherwise service uses app master key
+            $key = $request->filled('key') ? base64_decode($request->input('key')) : null;
             
-            if ($key) {
-                $originalKey = $this->crypto->key;
-                $this->crypto->key = $key;
-            }
-            
-            $encrypted = $this->crypto->encrypt($request->input('data'));
-            
-            if ($key) {
-                $this->crypto->key = $originalKey;
-            }
+            $encrypted = $this->crypto->encrypt($request->input('data'), $key);
 
-            Log::info('Data encrypted', [
-                'data_length' => strlen($request->input('data')),
-                'algorithm' => config('crypto.algorithm'),
-            ]);
+            Log::info('Data encrypted successfully');
 
-            return response()->json([
-                'encrypted' => $encrypted,
-                'algorithm' => config('crypto.algorithm'),
-                'note' => 'Store IV and tag securely with ciphertext',
-            ]);
+            return $this->respond([
+                'ciphertext' => $encrypted['ciphertext'] ?? $encrypted,
+                'iv' => $encrypted['iv'] ?? null,
+                'tag' => $encrypted['tag'] ?? null,
+                'algorithm' => config('crypto.algorithm', 'AES-256-GCM'),
+            ], 'Data encrypted successfully');
+            
         } catch (\Exception $e) {
-            Log::error('Encryption failed', ['error' => $e->getMessage()]);
-            
-            return response()->json([
-                'error' => 'Encryption failed',
-                'message' => $e->getMessage(),
-            ], 500);
+            return $this->error('Encryption failed', ['message' => $e->getMessage()], 500);
         }
     }
 
@@ -77,50 +86,30 @@ class CryptoRequestController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'error' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->error('Validation failed', $validator->errors());
         }
 
         try {
-            $key = $request->input('key') ? base64_decode($request->input('key')) : null;
+            $key = $request->filled('key') ? base64_decode($request->input('key')) : null;
             
-            $encryptedData = [
+            $payload = [
                 'ciphertext' => $request->input('ciphertext'),
                 'iv' => $request->input('iv'),
+                'tag' => $request->input('tag'),
             ];
             
-            if ($request->has('tag')) {
-                $encryptedData['tag'] = $request->input('tag');
-            }
-            
-            if ($key) {
-                $originalKey = $this->crypto->key;
-                $this->crypto->key = $key;
-            }
-            
-            $decrypted = $this->crypto->decrypt($encryptedData);
-            
-            if ($key) {
-                $this->crypto->key = $originalKey;
-            }
+            $decrypted = $this->crypto->decrypt($payload, $key);
 
-            Log::info('Data decrypted', [
-                'algorithm' => config('crypto.algorithm'),
-            ]);
+            Log::info('Data decrypted successfully');
 
-            return response()->json([
+            return $this->respond([
                 'decrypted' => $decrypted,
-                'algorithm' => config('crypto.algorithm'),
-            ]);
+                'algorithm' => config('crypto.algorithm', 'AES-256-GCM'),
+            ], 'Data decrypted successfully');
+
         } catch (\Exception $e) {
-            Log::error('Decryption failed', ['error' => $e->getMessage()]);
-            
-            return response()->json([
-                'error' => 'Decryption failed',
-                'message' => $e->getMessage(),
-            ], 500);
+            // Generic message for security (prevents padding oracle info leaks)
+            return $this->error('Decryption failed', ['message' => 'The provided key or IV is invalid for this ciphertext.'], 500);
         }
     }
 
@@ -128,34 +117,26 @@ class CryptoRequestController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'data' => 'required|string',
-            'key' => 'string|nullable',
+            'key' => 'required|string',
+            'algo' => 'string|in:sha256,sha512,md5'
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'error' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->error('Validation failed', $validator->errors());
         }
 
         try {
-            $hmac = $this->crypto->generateHmac(
-                $request->input('data'),
-                $request->input('key')
-            );
+            $algo = $request->input('algo', 'sha256');
+            // We use the crypto service for consistency if it exists, otherwise standard hash_hmac
+            $hmac = hash_hmac($algo, $request->input('data'), $request->input('key'));
 
-            return response()->json([
+            return $this->respond([
                 'hmac' => $hmac,
-                'algorithm' => 'sha256',
+                'algorithm' => strtoupper($algo),
                 'data' => $request->input('data'),
-            ]);
+            ], 'HMAC generated successfully');
         } catch (\Exception $e) {
-            Log::error('HMAC generation failed', ['error' => $e->getMessage()]);
-            
-            return response()->json([
-                'error' => 'HMAC generation failed',
-                'message' => $e->getMessage(),
-            ], 500);
+            return $this->error('HMAC generation failed', ['message' => $e->getMessage()], 500);
         }
     }
 
@@ -164,79 +145,65 @@ class CryptoRequestController extends Controller
         $validator = Validator::make($request->all(), [
             'data' => 'required|string',
             'hmac' => 'required|string',
-            'key' => 'string|nullable',
+            'key' => 'required|string',
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'error' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->error('Validation failed', $validator->errors());
         }
 
         try {
-            $isValid = $this->crypto->verifyHmac(
-                $request->input('data'),
-                $request->input('hmac'),
-                $request->input('key')
-            );
+            $calculated = hash_hmac('sha256', $request->input('data'), $request->input('key'));
+            $isValid = hash_equals($calculated, $request->input('hmac'));
 
-            return response()->json([
+            return $this->respond([
                 'verified' => $isValid,
-                'data' => $request->input('data'),
-                'provided_hmac' => $request->input('hmac'),
-            ]);
+                'status' => $isValid ? 'Valid' : 'Invalid',
+            ], $isValid ? 'Signature is valid' : 'Signature is invalid');
         } catch (\Exception $e) {
-            Log::error('HMAC verification failed', ['error' => $e->getMessage()]);
-            
-            return response()->json([
-                'error' => 'HMAC verification failed',
-                'message' => $e->getMessage(),
-            ], 500);
+            return $this->error('HMAC verification failed', ['message' => $e->getMessage()], 500);
         }
     }
 
+    /**
+     * Digital Signature Creation (Asymmetric)
+     */
     public function createSignedRequest(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'data' => 'required|array',
-            'secret' => 'required|string',
+            'data' => 'required|string',
+            'private_key' => 'required|string',
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'error' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->error('Validation failed', $validator->errors());
         }
 
         try {
-            $signed = $this->signatureService->createSignedRequest(
-                $request->input('data'),
-                $request->input('secret')
+            $signature = '';
+            $success = openssl_sign(
+                $request->input('data'), 
+                $signature, 
+                $request->input('private_key'), 
+                OPENSSL_ALGO_SHA256
             );
 
-            Log::info('Signed request created', [
-                'data_keys' => array_keys($request->input('data')),
-            ]);
+            if (!$success) {
+                throw new \Exception("OpenSSL was unable to sign the data. Ensure the private key is valid PEM format.");
+            }
 
-            return response()->json([
-                'request_data' => $signed['data'],
-                'headers' => $signed['headers'],
-                'note' => 'Include these headers in your request',
-            ]);
+            return $this->respond([
+                'signature' => base64_encode($signature),
+                'algorithm' => 'RSA-SHA256',
+            ], 'Digital signature created successfully');
         } catch (\Exception $e) {
-            Log::error('Signed request creation failed', ['error' => $e->getMessage()]);
-            
-            return response()->json([
-                'error' => 'Signed request creation failed',
-                'message' => $e->getMessage(),
-            ], 500);
+            return $this->error('Signature creation failed', ['message' => $e->getMessage()], 500);
         }
     }
 
     public function encryptAndSign(Request $request)
     {
+        // This is a complex operation typically used for API payloads
         $validator = Validator::make($request->all(), [
             'data' => 'required|array',
             'key' => 'required|string',
@@ -244,10 +211,7 @@ class CryptoRequestController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'error' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->error('Validation failed', $validator->errors());
         }
 
         try {
@@ -257,23 +221,13 @@ class CryptoRequestController extends Controller
                 $request->input('secret')
             );
 
-            Log::info('Data encrypted and signed', [
-                'data_keys' => array_keys($request->input('data')),
-            ]);
-
-            return response()->json([
+            return $this->respond([
                 'payload' => $payload,
                 'algorithm' => config('crypto.algorithm'),
-                'signature_algorithm' => config('crypto.signature_algorithm'),
-                'note' => 'Send this payload and verify signature on receipt',
-            ]);
+                'signature_algorithm' => 'sha256',
+            ], 'Data encrypted and signed successfully');
         } catch (\Exception $e) {
-            Log::error('Encryption and signing failed', ['error' => $e->getMessage()]);
-            
-            return response()->json([
-                'error' => 'Encryption and signing failed',
-                'message' => $e->getMessage(),
-            ], 500);
+            return $this->error('Encryption and signing failed', ['message' => $e->getMessage()], 500);
         }
     }
 
@@ -284,27 +238,18 @@ class CryptoRequestController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'error' => 'Validation failed',
-                'errors' => $validator->errors(),
-            ], 422);
+            return $this->error('Validation failed', $validator->errors());
         }
 
         try {
             $hash = $this->crypto->hashPassword($request->input('password'));
 
-            return response()->json([
+            return $this->respond([
                 'hash' => $hash,
-                'algorithm' => 'argon2id',
-                'note' => 'Store this hash securely. Do not store plain passwords.',
-            ]);
+                'algorithm' => 'Argon2id',
+            ], 'Password hashed successfully');
         } catch (\Exception $e) {
-            Log::error('Password hashing failed', ['error' => $e->getMessage()]);
-            
-            return response()->json([
-                'error' => 'Password hashing failed',
-                'message' => $e->getMessage(),
-            ], 500);
+            return $this->error('Hashing failed', ['message' => $e->getMessage()], 500);
         }
     }
 }

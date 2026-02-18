@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Str;
 
 class User extends Authenticatable
 {
@@ -25,7 +26,7 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
-        'secret_key',
+        'secret_key', 
     ];
 
     protected $casts = [
@@ -33,8 +34,13 @@ class User extends Authenticatable
         'last_login_at' => 'datetime',
         'locked_until' => 'datetime',
         'login_attempts' => 'integer',
+        'password' => 'hashed', // Laravel akan otomatis meng-hash teks polos
+        'secret_key' => 'encrypted', // Akan di-encrypt saat disimpan dan di-decrypt saat dibaca
     ];
 
+    /**
+     * Relasi dan Logika Bisnis
+     */
     public function wafLogs()
     {
         return $this->hasMany(WAFLog::class);
@@ -50,13 +56,33 @@ class User extends Authenticatable
         return $this->hasMany(BlockedIP::class, 'blocked_by');
     }
 
-    public function generateApiKey(): string
+    /**
+     * MODIFIKASI: Method khusus untuk mengisi data API key ke model 
+     * SEBELUM record pertama kali dibuat (untuk registrasi).
+     */
+    public function generateKeysForNewUser(): void
     {
-        $this->api_key = bin2hex(random_bytes(32));
-        $this->secret_key = bin2hex(random_bytes(64));
-        $this->save();
+        $this->api_key = 'apk_' . Str::random(32);
+        $this->secret_key = 'sk_' . Str::random(64);
+    }
+
+    /**
+     * Method eksisiting untuk regenerasi key dan langsung simpan.
+     */
+    public function generateApiKey(): array
+    {
+        $newApiKey = 'apk_' . Str::random(32);
+        $newSecretKey = 'sk_' . Str::random(64);
+
+        $this->forceFill([
+            'api_key' => $newApiKey,
+            'secret_key' => $newSecretKey,
+        ])->save();
         
-        return $this->api_key;
+        return [
+            'api_key' => $newApiKey,
+            'secret_key' => $newSecretKey
+        ];
     }
 
     public function isLocked(): bool
@@ -68,16 +94,20 @@ class User extends Authenticatable
     {
         $this->increment('login_attempts');
         
-        if ($this->login_attempts >= config('waf.brute_force.max_attempts')) {
-            $this->locked_until = now()->addSeconds(config('waf.brute_force.block_duration'));
+        $maxAttempts = config('waf.max_login_attempts', 5);
+        $blockDuration = config('waf.block_duration', 900);
+
+        if ($this->login_attempts >= $maxAttempts) {
+            $this->locked_until = now()->addSeconds($blockDuration);
             $this->save();
         }
     }
 
     public function resetLoginAttempts(): void
     {
-        $this->login_attempts = 0;
-        $this->locked_until = null;
-        $this->save();
+        $this->update([
+            'login_attempts' => 0,
+            'locked_until' => null,
+        ]);
     }
 }

@@ -29,6 +29,11 @@ class BlockedIP extends Model
         return $this->belongsTo(User::class, 'blocked_by');
     }
 
+    public function blockedBy()
+    {
+        return $this->belongsTo(User::class, 'blocked_by');
+    }
+
     public function isBlocked(): bool
     {
         if (!$this->blocked_until) {
