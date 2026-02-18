@@ -1,17 +1,53 @@
 {
   "version": 2,
+  "buildCommand": "composer install --no-dev --optimize-autoloader && npm ci && npm run build",
+  "outputDirectory": "public",
   "functions": {
     "api/*.php": {
-      "runtime": "vercel-php@0.7.1"
+      "runtime": "vercel-php@0.7.1",
+      "memory": 3008,
+      "maxDuration": 30
     }
   },
   "routes": [
     {
-      "src": "/build/(.*)",
-      "dest": "/public/build/$1"
+      "src": "^/build/(.*)",
+      "dest": "/public/build/$1",
+      "headers": {
+        "Cache-Control": "max-age=2592000, immutable"
+      }
     },
     {
-      "src": "/(.*)",
+      "src": "^/css/(.*)",
+      "dest": "/public/css/$1",
+      "headers": {
+        "Cache-Control": "max-age=2592000, immutable"
+      }
+    },
+    {
+      "src": "^/js/(.*)",
+      "dest": "/public/js/$1",
+      "headers": {
+        "Cache-Control": "max-age=2592000, immutable"
+      }
+    },
+    {
+      "src": "^/images/(.*)",
+      "dest": "/public/images/$1",
+      "headers": {
+        "Cache-Control": "max-age=2592000, immutable"
+      }
+    },
+    {
+      "src": "^/storage/(.*)",
+      "dest": "/storage/$1"
+    },
+    {
+      "src": "^/((?!api).*)\\.php$",
+      "dest": "/api/index.php"
+    },
+    {
+      "src": "^/(.*)?$",
       "dest": "/api/index.php"
     }
   ],
@@ -23,6 +59,10 @@
     "VIEW_COMPILED_PATH": "/tmp",
     "CACHE_DRIVER": "array",
     "LOG_CHANNEL": "stderr",
-    "SESSION_DRIVER": "cookie"
+    "SESSION_DRIVER": "cookie",
+    "APP_ENV": "production",
+    "APP_DEBUG": "false",
+    "APP_ENCRYPTION": "AES-256-GCM"
   }
 }
+
