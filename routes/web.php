@@ -4,7 +4,9 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CryptoRequestController;
 use App\Http\Controllers\DashboardController;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Http\Request;
+
 
 /*
 |--------------------------------------------------------------------------
@@ -133,4 +135,15 @@ Route::middleware(['verify.signature', 'throttle:60,1'])->prefix('api')->name('a
             'nonce' => $request->header('X-Nonce'),
         ]);
     })->name('secure-info');
+});
+
+// Baris kode tambahan untuk migrasi di Vercel
+Route::get('/gas-migrate', function () {
+    try {
+        // Menjalankan perintah php artisan migrate secara paksa
+        Artisan::call('migrate', ['--force' => true]);
+        return "🔥 Sukses! Tabel database berhasil dibuat di Railway.";
+    } catch (\Exception $e) {
+        return "❌ Gagal: " . $e->getMessage();
+    }
 });
