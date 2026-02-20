@@ -16,7 +16,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.100',
             'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'url' => 'http://localhost:8000/api/crypto/encrypt?id=1%27%20OR%201%3D1%20--',
+                'url' => url('/api/crypto/encrypt?id=1%27%20OR%201%3D1%20--'),
             'method' => 'POST',
             'request_data' => [
                 'id' => "1' OR 1=1 --",
@@ -33,7 +33,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.101',
             'user_agent' => 'Mozilla/5.0 (X11; Linux x86_64)',
-            'url' => 'http://localhost:8000/api/crypto/decrypt?query=UNION%20SELECT%20password%20FROM%20users--',
+                'url' => url('/api/crypto/decrypt?query=UNION%20SELECT%20password%20FROM%20users--'),
             'method' => 'POST',
             'request_data' => [
                 'query' => 'UNION SELECT password FROM users--',
@@ -48,7 +48,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.102',
             'user_agent' => 'curl/7.64.1',
-            'url' => 'http://localhost:8000/api/crypto/hmac',
+                'url' => url('/api/crypto/hmac'),
             'method' => 'POST',
             'request_data' => [
                 'data' => "'; DROP TABLE users; --",
@@ -64,7 +64,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.103',
             'user_agent' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6)',
-            'url' => 'http://localhost:8000/api/crypto/encrypt',
+                'url' => url('/api/crypto/encrypt'),
             'method' => 'POST',
             'request_data' => [
                 'data' => 'unauthorized_access_attempt',
@@ -80,7 +80,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.104',
             'user_agent' => 'PostmanRuntime/7.28.0',
-            'url' => 'http://localhost:8000/api/crypto/sign',
+                'url' => url('/api/crypto/sign'),
             'method' => 'POST',
             'request_data' => [
                 'message' => 'test',
@@ -97,7 +97,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.105',
             'user_agent' => 'Mozilla/5.0 (Android 11)',
-            'url' => 'http://localhost:8000/api/crypto/decrypt',
+                'url' => url('/api/crypto/decrypt'),
             'method' => 'POST',
             'request_data' => [
                 'nonce' => 'old_nonce_123',
@@ -113,7 +113,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.106',
             'user_agent' => 'curl/7.75.0',
-            'url' => 'http://localhost:8000/api/crypto/verify-hmac',
+                'url' => url('/api/crypto/verify-hmac'),
             'method' => 'POST',
             'request_data' => [
                 'timestamp' => '2026-01-15T00:00:00Z',  // Old timestamp
@@ -130,7 +130,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.107',
             'user_agent' => 'Mozilla/5.0 (Windows NT 10.0)',
-            'url' => 'http://localhost:8000/api/crypto/encrypt',
+                'url' => url('/api/crypto/encrypt'),
             'method' => 'POST',
             'request_data' => [
                 'comment' => '<img src=x onerror="alert(\'XSS\')">'
@@ -145,7 +145,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.108',
             'user_agent' => 'Mozilla/5.0',
-            'url' => 'http://localhost:8000/api/crypto/sign',
+                'url' => url('/api/crypto/sign'),
             'method' => 'POST',
             'request_data' => [
                 'data' => '<script>alert("XSS")</script>'
@@ -161,7 +161,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '192.168.1.109',
             'user_agent' => 'Mozilla/5.0',
-            'url' => 'http://localhost:8000/api/crypto/encrypt',
+                'url' => url('/api/crypto/encrypt'),
             'method' => 'POST',
             'request_data' => [
                 'action' => 'attempt_access',
@@ -177,7 +177,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '127.0.0.1',
             'user_agent' => 'Mozilla/5.0',
-            'url' => 'http://localhost:8000/api/crypto/encrypt',
+                'url' => url('/api/crypto/encrypt'),
             'method' => 'POST',
             'request_data' => [
                 'plaintext' => 'Hello World',
@@ -193,7 +193,7 @@ class WAFLogTestSeeder extends Seeder
         WafLog::create([
             'ip_address' => '127.0.0.1',
             'user_agent' => 'Mozilla/5.0',
-            'url' => 'http://localhost:8000/api/crypto/decrypt',
+                'url' => url('/api/crypto/decrypt'),
             'method' => 'POST',
             'request_data' => [
                 'ciphertext' => '***REDACTED***',

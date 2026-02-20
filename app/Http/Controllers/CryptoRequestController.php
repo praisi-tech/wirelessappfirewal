@@ -57,21 +57,37 @@ class CryptoRequestController extends Controller
         }
 
         try {
-            // Handle custom key if provided via Base64, otherwise service uses app master key
-            $key = $request->filled('key') ? base64_decode($request->input('key')) : null;
+            // Trim and handle custom key
+            $keyInput = trim($request->input('key') ?? '');
+            $key = null;
+            
+            if ($keyInput) {
+                // If user provides a custom key, it should be base64 encoded
+                try {
+                    $key = base64_decode($keyInput, strict: true);
+                    if (!$key) {
+                        return $this->error('Invalid Key Format', ['message' => 'Custom key must be valid base64 encoded.'], 400);
+                    }
+                } catch (\Exception $e) {
+                    return $this->error('Invalid Key Format', ['message' => 'Custom key must be valid base64 encoded.'], 400);
+                }
+            }
+            // If no custom key, null is passed → service uses system master key
             
             $encrypted = $this->crypto->encrypt($request->input('data'), $key);
 
-            Log::info('Data encrypted successfully');
+            Log::info('Data encrypted successfully', ['key_type' => $key ? 'custom' : 'system']);
 
             return $this->respond([
-                'ciphertext' => $encrypted['ciphertext'] ?? $encrypted,
-                'iv' => $encrypted['iv'] ?? null,
-                'tag' => $encrypted['tag'] ?? null,
+                'ciphertext' => $encrypted['ciphertext'],
+                'iv' => $encrypted['iv'],
+                'tag' => $encrypted['tag'],
                 'algorithm' => config('crypto.algorithm', 'AES-256-GCM'),
+                'key_type' => $key ? 'custom' : 'system',
             ], 'Data encrypted successfully');
             
         } catch (\Exception $e) {
+            Log::error('Encryption error', ['message' => $e->getMessage()]);
             return $this->error('Encryption failed', ['message' => $e->getMessage()], 500);
         }
     }
@@ -90,12 +106,29 @@ class CryptoRequestController extends Controller
         }
 
         try {
-            $key = $request->filled('key') ? base64_decode($request->input('key')) : null;
+            // Trim whitespace from all inputs to prevent copy-paste errors
+            $ciphertext = trim($request->input('ciphertext'));
+            $iv = trim($request->input('iv'));
+            $tag = trim($request->input('tag') ?? '');
+            $keyInput = trim($request->input('key') ?? '');
+            
+            $key = $keyInput ? base64_decode($keyInput, strict: true) : null;
+            
+            // Validate base64 format
+            if (!base64_decode($ciphertext, strict: true)) {
+                return $this->error('Invalid Format', ['message' => 'Ciphertext must be valid base64 encoded data.'], 400);
+            }
+            if (!base64_decode($iv, strict: true)) {
+                return $this->error('Invalid Format', ['message' => 'IV must be valid base64 encoded data.'], 400);
+            }
+            if ($tag && !base64_decode($tag, strict: true)) {
+                return $this->error('Invalid Format', ['message' => 'Tag must be valid base64 encoded data.'], 400);
+            }
             
             $payload = [
-                'ciphertext' => $request->input('ciphertext'),
-                'iv' => $request->input('iv'),
-                'tag' => $request->input('tag'),
+                'ciphertext' => $ciphertext,
+                'iv' => $iv,
+                'tag' => $tag,
             ];
             
             $decrypted = $this->crypto->decrypt($payload, $key);
@@ -108,8 +141,22 @@ class CryptoRequestController extends Controller
             ], 'Data decrypted successfully');
 
         } catch (\Exception $e) {
-            // Generic message for security (prevents padding oracle info leaks)
-            return $this->error('Decryption failed', ['message' => 'The provided key or IV is invalid for this ciphertext.'], 500);
+            // Log the actual error for debugging
+            Log::error('Decryption error', [
+                'exception' => class_basename($e),
+                'message' => $e->getMessage(),
+            ]);
+            
+            $message = 'Decryption failed. ';
+            if (str_contains($e->getMessage(), 'Authentication tag')) {
+                $message .= 'The Authentication Tag field is missing or invalid. Make sure to copy the Tag from the encryption result.';
+            } elseif (str_contains($e->getMessage(), 'Check key')) {
+                $message .= 'Your key, IV, or tag are incorrect. Verify: 1) Are you using the same key as encryption? 2) Did you copy Ciphertext, IV, and Tag exactly (no extra spaces)? 3) Did the app key change since encryption?';
+            } else {
+                $message .= 'Verify all values match the encryption result exactly.';
+            }
+            
+            return $this->error('Decryption Failed', ['message' => $message], 500);
         }
     }
 
@@ -180,16 +227,25 @@ class CryptoRequestController extends Controller
         }
 
         try {
+            $privateKeyInput = trim($request->input('private_key'));
+            
+            // Validate PEM format
+            if (!str_contains($privateKeyInput, 'BEGIN') || !str_contains($privateKeyInput, 'END')) {
+                return $this->error('Invalid Key Format', [
+                    'message' => 'Private key must be in PEM format (starting with "-----BEGIN PRIVATE KEY-----")'
+                ], 400);
+            }
+            
             $signature = '';
             $success = openssl_sign(
                 $request->input('data'), 
                 $signature, 
-                $request->input('private_key'), 
+                $privateKeyInput, 
                 OPENSSL_ALGO_SHA256
             );
 
             if (!$success) {
-                throw new \Exception("OpenSSL was unable to sign the data. Ensure the private key is valid PEM format.");
+                throw new \Exception("OpenSSL rejected the private key. Ensure it's a valid RSA private key in PEM format. Common issues: wrong key type (use RSA), corrupted key, or missing BEGIN/END markers.");
             }
 
             return $this->respond([
@@ -197,6 +253,7 @@ class CryptoRequestController extends Controller
                 'algorithm' => 'RSA-SHA256',
             ], 'Digital signature created successfully');
         } catch (\Exception $e) {
+            Log::error('Signature creation error', ['message' => $e->getMessage()]);
             return $this->error('Signature creation failed', ['message' => $e->getMessage()], 500);
         }
     }
