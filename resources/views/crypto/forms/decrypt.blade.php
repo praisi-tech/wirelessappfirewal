@@ -56,7 +56,7 @@
                                 <input type="password" name="key" id="key" class="form-control" 
                                        placeholder="Leave blank to use system master key">
                             </div>
-                            <div class="form-text mt-2">The key must match the one used during encryption.</div>
+                            <div class="form-text mt-2">⚠️ <strong>Critical:</strong> Must match the key used during encryption (exactly!).</div>
                         </div>
 
                         <div class="d-grid gap-2">
@@ -101,6 +101,22 @@
 </div>
 
 <script>
+/**
+ * Auto-trim whitespace from form inputs to prevent copy-paste errors
+ */
+document.addEventListener('DOMContentLoaded', function() {
+    const fieldsToTrim = ['ciphertext', 'iv', 'tag', 'key'];
+    
+    fieldsToTrim.forEach(fieldId => {
+        const field = document.getElementById(fieldId);
+        if (field) {
+            field.addEventListener('blur', function() {
+                this.value = this.value.trim();
+            });
+        }
+    });
+});
+
 /**
  * Copies text to clipboard and provides visual feedback
  */

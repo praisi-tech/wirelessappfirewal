@@ -19,6 +19,11 @@ Route::get('/', function () {
     return view('welcome');
 });
 
+// API Documentation
+Route::get('/api-docs', function () {
+    return view('api-docs');
+})->name('api-docs');
+
 /**
  * GUEST ROUTES
  */

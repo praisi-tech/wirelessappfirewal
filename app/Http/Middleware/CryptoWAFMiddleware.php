@@ -51,8 +51,37 @@ class CryptoWAFMiddleware
             return $next($request);
         }
         
-        // 3. Skip WAF for the dashboard/landing tools to avoid false positives
-        if ($request->isMethod('GET') && ($request->path() === 'crypto' || $request->path() === 'dashboard')) {
+        // 3. Skip WAF for safe GET requests (forms, dashboards, views)
+        // AND skip WAF for POST requests to CRYPTO operations (user submitting their own data)
+        if ($request->isMethod('GET')) {
+            $safePaths = [
+                'crypto',
+                'dashboard',
+                'crypto/encrypt-form',
+                'crypto/decrypt-form',
+                'crypto/hmac-form',
+                'crypto/sign-form',
+                'crypto/hash-form',
+                'login',
+                'register',
+                'api-docs',
+                'profile',
+                'api-keys',
+            ];
+            
+            foreach ($safePaths as $path) {
+                if ($request->path() === $path || $request->is($path . '*')) {
+                    return $next($request);
+                }
+            }
+        }
+        
+        // Skip WAF for crypto POST operations (user-submitted crypto data)
+        if ($request->isMethod('POST') && $request->is('crypto/*')) {
+            Log::debug('WAF: Skipping scan for crypto operation', [
+                'path' => $request->path(),
+                'operation' => basename($request->path()),
+            ]);
             return $next($request);
         }
         
@@ -160,14 +189,26 @@ class CryptoWAFMiddleware
         if ($blockRequest || $highestSeverity >= 4) {
             Log::alert('WAF: Request blocked due to high-severity threat', [
                 'ip' => $request->ip(),
+                'path' => $request->path(),
+                'method' => $request->method(),
                 'highest_severity' => $highestSeverity,
                 'threats_count' => count($threats),
+                'threat_types' => array_map(fn($t) => $t['type'], $threats),
+                'threat_details' => $threats,
             ]);
             
             if ($request->expectsJson() || $request->is('api/*')) {
-                return response()->json(['error' => 'Security policy violation', 'details' => 'Request blocked by WAF'], 403);
+                return response()->json([
+                    'error' => 'Security policy violation',
+                    'details' => 'Request blocked by WAF',
+                    'threats' => array_map(fn($t) => ['type' => $t['type'], 'description' => $t['description'] ?? null], $threats)
+                ], 403);
             }
-            return redirect()->route('dashboard')->with('error', 'Your request was blocked for security reasons.');
+            
+            // Include threat details in web response for debugging
+            $threatSummary = implode(', ', array_map(fn($t) => $t['type'] . ' (' . ($t['description'] ?? 'no details') . ')', $threats));
+            return redirect()->route('crypto.dashboard')
+                ->with('error', 'Your request was blocked by the security system: ' . $threatSummary);
         }
         
         // Soft Protection: Sanitize and Continue

@@ -183,7 +183,7 @@
                                 <a href="/register" class="btn btn-outline-custom w-100 py-2">Sign Up</a>
                             </div>
                             <div class="col-6">
-                                <a href="/crypto/encrypt" class="btn btn-outline-custom w-100 py-2">API Docs</a>
+                                <a href="/api-docs" class="btn btn-outline-custom w-100 py-2">API Docs</a>
                             </div>
                         </div>
                     </div>

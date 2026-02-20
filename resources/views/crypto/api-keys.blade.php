@@ -145,7 +145,7 @@ const signature = crypto
     .digest('hex');
 
 // Make request
-fetch('http://localhost:8000/api/crypto/encrypt', {
+fetch('/api/crypto/encrypt', {
     method: 'POST',
     headers: {
         'X-API-Key': apiKey,

@@ -103,7 +103,19 @@
 
                         <div class="alert alert-info py-2 px-3 mt-2 border-0 shadow-sm d-flex align-items-center">
                             <i class="bi bi-info-circle-fill me-2"></i>
-                            <small>Algorithm: <strong>{{ session('result')['algorithm'] }}</strong></small>
+                            <small>Algorithm: <strong>{{ session('result')['algorithm'] }}</strong> | Key Type: <strong>{{ session('result')['key_type'] === 'system' ? '🔐 System Master Key' : '🔑 Custom Key' }}</strong></small>
+                        </div>
+                        
+                        <div class="alert alert-warning py-2 px-3 mt-3 border-0 shadow-sm">
+                            <i class="bi bi-exclamation-circle-fill me-2"></i>
+                            <strong>⚠️  Important for Decryption:</strong><br>
+                            <small>When decrypting, use the <strong>same key type</strong> as shown above.
+                            @if(session('result')['key_type'] === 'system')
+                                Leave the key field blank to use the system master key.
+                            @else
+                                Provide the exact custom key you used, encoded as Base64.
+                            @endif
+                            </small>
                         </div>
                     </div>
                     @endif
